@@ -48,6 +48,8 @@ import Data.Array.Accelerate.Array.Sugar                            ( showShape,
 import Data.Array.Accelerate.Data.Complex
 import Data.Array.Accelerate.Math.FFT.Mode
 
+import Debug.Trace
+
 #ifdef ACCELERATE_LLVM_NATIVE_BACKEND
 import qualified Data.Array.Accelerate.Math.FFT.LLVM.Native         as Native
 #endif
@@ -157,8 +159,8 @@ fft2D' mode (Z :. height :. width) arr
 #endif
                   fft'
 
-        fft' a  = A.transpose . fft sign (Z:.width)  height
-              >-> A.transpose . fft sign (Z:.height) width
+        fft' a  = A.transpose . fft sign (Z:.height) width
+              >-> A.transpose . fft sign (Z:.width) height
                 $ a
     in
     case mode of
@@ -195,7 +197,7 @@ fft3D' :: forall e. FFTElt e
        -> Acc (Array DIM3 (Complex e))
 fft3D' mode (Z :. depth :. height :. width) arr
   = let sign    = signOfMode mode :: e
-        scale   = P.fromIntegral (width * height)
+        scale   = P.fromIntegral (depth * width * height)
         go      =
 #ifdef ACCELERATE_LLVM_NATIVE_BACKEND
                   foreignAcc (Native.fft3D mode) $
@@ -208,25 +210,24 @@ fft3D' mode (Z :. depth :. height :. width) arr
 #endif
                   fft'
 
-        fft' a  = rotate3D . fft sign (Z:.width :.depth)  height
+        fft' a  = rotate3D . fft sign (Z:.depth :.height)  width
               >-> rotate3D . fft sign (Z:.height:.width)  depth
-              >-> rotate3D . fft sign (Z:.depth :.height) width
+              >-> rotate3D . fft sign (Z:.width :.depth) height
                 $ a
     in
     case mode of
       Inverse -> A.map (/scale) (go arr)
       _       -> go arr
 
-
+-- `generate` is used instead of `backpermute` because of some issue with
+-- backpermute and 3-dimension arrays where each dimension is a different length
 rotate3D :: Elt e => Acc (Array DIM3 e) -> Acc (Array DIM3 e)
-rotate3D arr
-  = backpermute (swap (A.shape arr)) swap arr
-  where
-    swap :: Exp DIM3 -> Exp DIM3
-    swap ix =
-      let Z :. m :. k :. l = unlift ix  :: Z :. Exp Int :. Exp Int :. Exp Int
-      in  lift $ Z :. k :. l :. m
-
+rotate3D arr = do
+  let Z :. k :. l :. m = unlift $ A.shape arr  :: Z :. Exp Int :. Exp Int :. Exp Int
+  let sz = lift $ Z :. l :. m :. k
+  generate sz $ \ix -> do
+    let Z :. l' :. m' :. k' = unlift ix :: Z :. Exp Int :. Exp Int :. Exp Int
+    arr ! (index3 k' l' m')
 
 -- Rank-generalised Cooley-Tuckey DFT
 --
